@@ -57,3 +57,36 @@ def test_download_hashing(tmp_path: Path) -> None:
     assert metadata["sha256"] == expected_hash
     assert downloaded_path.read_bytes() == payload
     client.close()
+
+
+def test_download_age_verify_redirect(tmp_path: Path) -> None:
+    payload = b"%PDF-1.4 sample"
+    state = {"file_hits": 0, "age_hits": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/file.pdf":
+            state["file_hits"] += 1
+            if state["file_hits"] == 1:
+                return httpx.Response(
+                    302,
+                    headers={
+                        "Location": "/age-verify?destination=/file.pdf",
+                        "Set-Cookie": "QueueITAccepted-abc=1; Path=/; Expires=Wed, 21 Oct 2025 07:28:00 GMT",
+                    },
+                )
+            return httpx.Response(200, content=payload)
+        if request.url.path == "/age-verify":
+            state["age_hits"] += 1
+            return httpx.Response(200, content=b"ok")
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport)
+    metadata = download_file("https://example.com/file.pdf", tmp_path, client=client)
+    expected_hash = hashlib.sha256(payload).hexdigest()
+
+    assert metadata["sha256"] == expected_hash
+    assert Path(metadata["path"]).read_bytes() == payload
+    assert state["file_hits"] == 2
+    assert state["age_hits"] == 1
+    client.close()
